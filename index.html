@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>AR Number Sorting (Mirror Text Fixed)</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- MediaPipe Hands (ตรวจจับนิ้วมือผ่านกล้อง) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  
+  <!-- Font Awesome สำหรับไอคอนต่าง ๆ -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #080810;
+      font-family: system-ui, -apple-system, sans-serif;
+      user-select: none;
+      touch-action: none; /* ป้องกันการซูมหรือเลื่อนหน้าจอบน Android */
+    }
+    
+    /* เอฟเฟกต์เรืองแสง */
+    .glow-blue { box-shadow: 0 0 15px rgba(59, 130, 246, 0.6); }
+    .glow-green { box-shadow: 0 0 15px rgba(16, 185, 129, 0.6); }
+    .glow-amber { box-shadow: 0 0 15px rgba(245, 158, 11, 0.6); }
+    .glow-red { box-shadow: 0 0 15px rgba(239, 68, 68, 0.6); }
+    
+    @keyframes pulse-fast {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.95); }
+    }
+    .pulse-fast {
+      animation: pulse-fast 1.5s infinite;
+    }
+  </style>
+</head>
+<body class="relative w-screen h-screen flex flex-col items-center justify-between">
+
+  <!-- แท็กวิดีโอดึงข้อมูลกล้องแบบซ่อน (นำไปวาดลง Canvas แทนเพื่อปรับ Mirror) -->
+  <video id="webcam" class="hidden" autoplay playsinline muted></video>
+
+  <!-- หน้าจอวาดหลักของเกม AR -->
+  <canvas id="ar-canvas" class="absolute inset-0 w-full h-full object-cover z-0"></canvas>
+
+  <!-- แจ้งเตือนด่วนหากเปิดในเบราว์เซอร์ในแอปอื่น (เช่น LINE / Facebook) บน Android -->
+  <div id="inapp-warning" class="hidden absolute top-4 left-4 right-4 bg-red-600 text-white p-4 rounded-2xl z-50 shadow-2xl flex flex-col gap-2 border border-red-400 animate-bounce">
+    <div class="flex items-center gap-3">
+      <i class="fa-solid fa-triangle-exclamation text-2xl"></i>
+      <div class="font-bold text-sm">ตรวจพบว่าคุณกำลังเปิดผ่านเบราว์เซอร์ในแอปอื่น!</div>
+    </div>
+    <p class="text-xs text-red-100">แอปนี้มักจะบล็อกกล้องบน Android แนะนำให้กดปุ่มเมนู <strong class="underline">จุด 3 จุด (...)</strong> ขวาบน แล้วเลือก <strong class="underline">"เปิดด้วย Chrome" (Open in Chrome)</strong> เพื่อความแม่นยำสูงสุด</p>
+  </div>
+
+  <!-- หน้าจอโหลดข้อมูลและแนะนำแก้ไขปัญหากล้องสำหรับ Android -->
+  <div id="loading-screen" class="absolute inset-0 bg-slate-950 z-50 flex flex-col items-center justify-center text-white px-6 overflow-y-auto py-10">
+    <div class="max-w-md w-full bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-2xl flex flex-col items-center text-center">
+      
+      <!-- โลโก้กล้องและสถานะโหลด -->
+      <div class="relative w-20 h-20 mb-4 flex items-center justify-center">
+        <div class="animate-spin absolute inset-0 rounded-full border-t-4 border-b-4 border-blue-500"></div>
+        <i class="fa-solid fa-camera text-blue-400 text-2xl"></i>
+      </div>
+
+      <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400 uppercase">
+        AR Sorting (Android Ready)
+      </h1>
+      <p class="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-4">แก้ไขตัวหนังสือกลับด้านสมบูรณ์แบบ</p>
+      
+      <!-- บันทึกการทำงานสดเพื่อวิเคราะห์จุดติดขัดบน Android -->
+      <div class="w-full bg-slate-950 rounded-xl p-4 text-left font-mono text-xs text-slate-400 mb-4 border border-slate-800 space-y-1 h-32 overflow-y-auto" id="status-logs">
+        <div>> กำลังเชื่อมโยงระบบปฏิบัติการ Android...</div>
+        <div>> กำลังประมวลผลคำขอสิทธิ์กล้องถ่ายรูป...</div>
+      </div>
+
+      <!-- ข้อแนะนำสถานะและการเปลี่ยนโหมด -->
+      <div class="w-full space-y-3">
+        <div id="camera-loading-text" class="text-xs text-amber-400 font-semibold pulse-fast">
+          โปรดกดปุ่ม "อนุญาต" (Allow) สิทธิ์กล้องหากระบบขอเปิดใช้งาน
+        </div>
+        
+        <button id="btn-fallback-mode" class="w-full bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 font-bold py-3 px-6 rounded-xl text-xs transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-hand-pointer text-base"></i>
+          เล่นโหมดสำรอง (ใช้การสัมผัสจอ/เมาส์แทน)
+        </button>
+      </div>
+
+      <!-- คู่มือแก้ปัญหากล้องของ Android -->
+      <div class="mt-4 border-t border-slate-800 pt-4 text-left w-full">
+        <p class="text-xs font-bold text-slate-400 mb-1"><i class="fa-solid fa-gears mr-1 text-blue-500"></i> กล้องยังไม่เปิด? ลองทำตามขั้นตอนดังนี้:</p>
+        <ol class="text-[10px] text-slate-500 list-decimal pl-4 space-y-1">
+          <li>ตรวจสอบให้มั่นใจว่าไม่ได้เปิดหน้ากล้องค้างไว้ในแอปอื่น</li>
+          <li>สังเกตแถบค้นหาด้านบนสุด กดปุ่ม **สิทธิ์ (🔒 หรือ ⚙️)** และตรวจสอบว่าได้ "อนุญาตกล้อง" แล้ว</li>
+          <li>หากใช้ **Android Chrome** แนะนำให้กดรีเฟรชหน้าเว็บ 1 ครั้ง</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- หน้าจอเริ่มต้นเล่นเกม -->
+  <div id="start-screen" class="hidden absolute inset-0 bg-slate-950/90 z-40 flex flex-col items-center justify-center text-white p-4">
+    <div class="bg-slate-900/90 p-6 rounded-3xl border border-blue-500/40 max-w-sm w-full text-center glow-blue backdrop-blur-md">
+      <h2 class="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400 mb-2 uppercase">
+        เรียงลำดับตัวเลข AR
+      </h2>
+      
+      <div id="mode-badge" class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/30 mb-4">
+        <i class="fa-solid fa-camera"></i> โหมดกล้องตรวจจับมือ AI
+      </div>
+
+      <!-- คู่มือการสลับที่และการคีบ -->
+      <div class="text-left space-y-2.5 mb-6 text-slate-300 bg-slate-950/50 p-4 rounded-xl border border-slate-800 text-xs">
+        <p class="font-bold text-white text-sm flex items-center gap-1.5">
+          <i class="fa-solid fa-gamepad text-amber-400"></i> วิธีการเล่นบน Android:
+        </p>
+        <ul class="list-disc pl-4 space-y-1.5 text-slate-400" id="guide-steps">
+          <li>ใช้นิ้วโป้งและนิ้วชี้ <strong class="text-amber-400">จีบเข้าหากัน (Pinch)</strong> เพื่อ "หนีบ" บล็อกตัวเลขขึ้นมาเลื่อนลาก</li>
+          <li>ลากตัวเลขเรียงสลับสล็อตตามโจทย์ด่าน</li>
+          <li>เมื่อจัดเรียงเสร็จ ให้ <strong class="text-emerald-400">กางฝ่ามือนิ่งๆ ไว้</strong> เหนือปุ่ม <strong class="text-emerald-400">"ยืนยันคำตอบ"</strong> ด้านใดด้านหนึ่งที่สะดวก</li>
+        </ul>
+      </div>
+
+      <button id="btn-start" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-bold py-3 px-6 rounded-xl text-base transition duration-200 transform active:scale-95 glow-blue">
+        เริ่มเล่นเกม
+      </button>
+    </div>
+  </div>
+
+  <!-- ส่วนควบคุมเกม (Overlay HUD) -->
+  <div id="game-hud" class="absolute inset-0 pointer-events-none flex flex-col justify-between p-3 z-10">
+    
+    <!-- HUD ส่วนบน -->
+    <div class="w-full flex flex-col md:flex-row justify-between items-center gap-2">
+      <!-- ข้อมูลความคืบหน้า -->
+      <div class="flex justify-between w-full md:w-auto gap-2 pointer-events-auto">
+        <div class="bg-slate-900/90 text-white px-3 py-1.5 rounded-xl border border-blue-500/30 flex items-center gap-1.5 glow-blue text-xs">
+          <span class="text-slate-400 font-bold">ข้อที่:</span>
+          <span id="hud-question-num" class="font-black text-blue-400">1/10</span>
+        </div>
+        <div class="bg-slate-900/90 text-white px-3 py-1.5 rounded-xl border border-emerald-500/30 flex items-center gap-1.5 glow-green text-xs">
+          <span class="text-slate-400 font-bold">คะแนน:</span>
+          <span id="hud-score" class="font-black text-emerald-400">0</span>
+        </div>
+        
+        <!-- ปุ่มสลับกล้องสำหรับมือถือ Android (กล้องหน้า/กล้องหลัง) -->
+        <button id="btn-switch-camera" class="bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs">
+          <i class="fa-solid fa-arrows-rotate"></i>
+          <span>สลับกล้อง</span>
+        </button>
+      </div>
+
+      <!-- โจทย์ของด่าน -->
+      <div class="bg-slate-900/95 text-white px-4 py-2.5 rounded-xl border-2 border-amber-500 flex flex-col items-center min-w-[250px] text-center pointer-events-auto shadow-2xl">
+        <span class="text-[9px] text-amber-400 uppercase tracking-widest font-black mb-0.5">คำสั่งประจำด่าน</span>
+        <h3 id="game-instruction" class="text-sm md:text-base font-black text-white">
+          เรียงลำดับตัวเลขจาก <span class="text-cyan-400 font-extrabold underline">น้อยไปหามาก</span>
+        </h3>
+      </div>
+    </div>
+
+    <!-- เตือนเมื่อกล้องไม่เจอข้อต่อมือ -->
+    <div id="no-hand-alert" class="hidden self-center bg-red-500/90 text-white px-4 py-2 rounded-full border border-red-400 flex items-center gap-1.5 animate-bounce backdrop-blur-sm pointer-events-auto text-xs">
+      <i class="fa-solid fa-hand"></i>
+      <span class="font-bold">ไม่พบข้อต่อมือของคุณในจอกล้อง</span>
+    </div>
+
+    <!-- HUD ส่วนล่าง -->
+    <div class="w-full flex justify-between items-end">
+      <div class="bg-slate-900/90 text-white px-3 py-1.5 rounded-xl border border-slate-800 pointer-events-auto text-[10px] space-y-0.5">
+        <div class="flex justify-between gap-3">
+          <span class="text-slate-500">โหมดเล่น:</span>
+          <span id="hud-mode-display" class="font-bold text-slate-300">กล้องตรวจจับ</span>
+        </div>
+        <div id="pinch-debug-info" class="flex justify-between gap-3">
+          <span class="text-slate-500">ระยะหยิบ:</span>
+          <span id="hud-pinch-dist" class="font-bold text-blue-400">0%</span>
+        </div>
+      </div>
+      
+      <div class="bg-slate-900/90 text-white px-4 py-1.5 rounded-xl border border-slate-800 pointer-events-auto text-[10px]">
+        <p class="text-center text-slate-400" id="submit-guideline">
+          กางมือแช่บนปุ่ม <span class="text-emerald-400 font-bold">ยืนยัน</span> ค้างเพื่อตอบ
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- หน้าจอรายงานคะแนนรวมเมื่อจบครบ 10 ข้อ -->
+  <div id="summary-screen" class="hidden absolute inset-0 bg-slate-950/95 z-50 flex flex-col items-center justify-center text-white p-4">
+    <div class="bg-slate-900 p-6 rounded-3xl border-2 border-emerald-500 max-w-sm w-full text-center glow-green shadow-2xl">
+      <div class="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-emerald-500 animate-pulse">
+        <i class="fa-solid fa-trophy text-emerald-400 text-3xl"></i>
+      </div>
+      <h2 class="text-2xl font-black mb-1 text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300 uppercase">
+        สิ้นสุดการจัดเรียง!
+      </h2>
+      <p class="text-slate-500 mb-4 text-[10px]">คุณจบแบบฝึกหัดเรียงเลขชุด AR เรียบร้อยแล้ว</p>
+      
+      <div class="bg-slate-950/80 rounded-xl p-4 mb-6 border border-slate-800">
+        <p class="text-slate-500 text-[9px] mb-0.5 uppercase tracking-widest font-black">คะแนนสะสมที่คุณได้</p>
+        <p class="text-5xl font-black text-emerald-400"><span id="final-score">0</span> <span class="text-xl text-slate-500">/ 10</span></p>
+        <p class="text-slate-300 mt-2 text-xs font-semibold" id="performance-feedback">-</p>
+      </div>
+
+      <button id="btn-restart" class="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold py-3 px-6 rounded-xl text-sm transition duration-200 transform active:scale-95 glow-green">
+        <i class="fa-solid fa-rotate-left mr-1.5"></i> เล่นใหม่อีกครั้ง
+      </button>
+    </div>
+  </div>
+
+  <!-- เอฟเฟกต์ตอบถูก / ผิด -->
+  <div id="feedback-overlay" class="hidden absolute inset-0 z-30 flex items-center justify-center pointer-events-none transition-all duration-300">
+    <div id="feedback-card" class="px-8 py-5 rounded-2xl text-white font-black text-2xl flex flex-col items-center gap-2 border-4 transform scale-90 opacity-0 transition-all duration-300 shadow-2xl">
+      <i id="feedback-icon" class="text-5xl"></i>
+      <span id="feedback-text"></span>
+    </div>
+  </div>
+
+  <script>
+    // --- สเตตการทำงานของระบบเกมบน Android ---
+    const state = {
+      isAiReady: false,
+      isGameStarted: false,
+      score: 0,
+      currentQuestionNum: 1,
+      totalQuestions: 10,
+      orderType: 'asc',
+      numbers: [],
+      heldBlockIndex: -1,
+      pinchActive: false,
+      
+      // ปรับปรุงการตอบสนองให้แม่นยำยิ่งขึ้น
+      pinchThreshold: 45,    
+      unpinchThreshold: 60,  
+      confirmHoldFrames: 20, 
+      confirmTimerLeft: 0,
+      confirmTimerRight: 0,
+      
+      handInView: false,
+      cursorX: 0,
+      cursorY: 0,
+      
+      controlMode: 'camera', 
+      cameraFacingMode: 'user', // 'user' (กล้องหน้า) หรือ 'environment' (กล้องหลัง)
+      activeStream: null,
+      
+      mouseIsDown: false
+    };
+
+    const elements = {
+      webcam: document.getElementById('webcam'),
+      canvas: document.getElementById('ar-canvas'),
+      loadingScreen: document.getElementById('loading-screen'),
+      startScreen: document.getElementById('start-screen'),
+      gameHud: document.getElementById('game-hud'),
+      hudQuestionNum: document.getElementById('hud-question-num'),
+      hudScore: document.getElementById('hud-score'),
+      gameInstruction: document.getElementById('game-instruction'),
+      noHandAlert: document.getElementById('no-hand-alert'),
+      hudPinchDist: document.getElementById('hud-pinch-dist'),
+      summaryScreen: document.getElementById('summary-screen'),
+      finalScore: document.getElementById('final-score'),
+      performanceFeedback: document.getElementById('performance-feedback'),
+      btnStart: document.getElementById('btn-start'),
+      btnRestart: document.getElementById('btn-restart'),
+      btnFallbackMode: document.getElementById('btn-fallback-mode'),
+      btnSwitchCamera: document.getElementById('btn-switch-camera'),
+      feedbackOverlay: document.getElementById('feedback-overlay'),
+      feedbackCard: document.getElementById('feedback-card'),
+      feedbackIcon: document.getElementById('feedback-icon'),
+      feedbackText: document.getElementById('feedback-text'),
+      statusLogs: document.getElementById('status-logs'),
+      modeBadge: document.getElementById('mode-badge'),
+      guideSteps: document.getElementById('guide-steps'),
+      hudModeDisplay: document.getElementById('hud-mode-display'),
+      pinchDebugInfo: document.getElementById('pinch-debug-info'),
+      submitGuideline: document.getElementById('submit-guideline')
+    };
+
+    const ctx = elements.canvas.getContext('2d');
+
+    // บันทึกระบบประเมิน Log ของเว็บแอปพลิเคชัน
+    function addLog(text) {
+      const div = document.createElement('div');
+      div.innerText = `> ${text}`;
+      elements.statusLogs.appendChild(div);
+      elements.statusLogs.scrollTop = elements.statusLogs.scrollHeight;
+    }
+
+    // ตรวจสอบเบราว์เซอร์ภายนอก (In-App Browser)
+    function checkInAppBrowser() {
+      const ua = navigator.userAgent || navigator.vendor || window.opera;
+      const isInApp = (ua.indexOf("FBAN") > -1) || (ua.indexOf("FBAV") > -1) || (ua.indexOf("Line") > -1) || (ua.indexOf("Instagram") > -1);
+      if (isInApp) {
+        document.getElementById('inapp-warning').classList.remove('hidden');
+        addLog("คำเตือน: ตรวจพบ In-App Browser แนะนำให้เปิดด้วย Chrome");
+      }
+    }
+
+    // ขนาดตัวแปรสลักบล็อกหลัก
+    let blockWidth = 75;
+    let blockHeight = 75;
+    let blockY = 0;
+    let blocksX = [];
+
+    let confirmBtnLeft = { x: 0, y: 0, w: 110, h: 90 };
+    let confirmBtnRight = { x: 0, y: 0, w: 110, h: 90 };
+
+    function resizeCanvas() {
+      elements.canvas.width = window.innerWidth;
+      elements.canvas.height = window.innerHeight;
+      updateLayoutMetrics();
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    function updateLayoutMetrics() {
+      const w = elements.canvas.width;
+      const h = elements.canvas.height;
+      
+      // ปรับขนาดความกว้างบล็อกเฉลี่ย 8 บล็อกให้พอดีจอแนวตั้งมือถือ ไม่ล้นขอบจอ
+      blockWidth = Math.min(65, Math.floor((w - 60) / 8));
+      blockHeight = blockWidth;
+      blockY = h * 0.58; // ยกบล็อกขึ้นสูงขึ้นจากขอบล่างเล็กน้อยเพื่อให้อยู่ในระยะสายตาที่พอดีมือ
+
+      const totalWidthOfBlocks = (blockWidth + 6) * 8 - 6;
+      const startX = (w - totalWidthOfBlocks) / 2;
+      
+      blocksX = [];
+      for (let i = 0; i < 8; i++) {
+        blocksX.push(startX + i * (blockWidth + 6));
+      }
+
+      // วางตำแหน่งปุ่มยืนยันซ้าย-ขวา ให้มีขนาดใหญ่พอกดง่าย แต่ไม่บังบล็อกตัวเลข
+      const btnW = Math.min(125, Math.floor(w * 0.32));
+      confirmBtnLeft = { x: 15, y: h * 0.25, w: btnW, h: 100 };
+      confirmBtnRight = { x: w - btnW - 15, y: h * 0.25, w: btnW, h: 100 };
+
+      if (state.numbers.length > 0) {
+        state.numbers.forEach((b, idx) => {
+          b.targetX = blocksX[b.originalIndex];
+        });
+      }
+    }
+
+    // --- การสร้างด่านทดสอบและลอจิกเรียงตัวเลข ---
+    function generateQuestion() {
+      state.orderType = Math.random() > 0.5 ? 'asc' : 'desc';
+      
+      const uniqueNumbers = new Set();
+      while(uniqueNumbers.size < 8) {
+        uniqueNumbers.add(Math.floor(Math.random() * 99) + 1);
+      }
+      
+      const rawNumbers = Array.from(uniqueNumbers);
+      
+      state.numbers = rawNumbers.map((num, index) => {
+        return {
+          id: index,
+          val: num,
+          x: blocksX[index],
+          y: blockY,
+          targetX: blocksX[index],
+          originalIndex: index
+        };
+      });
+
+      if (state.orderType === 'asc') {
+        elements.gameInstruction.innerHTML = `เรียงลำดับตัวเลขจาก <span class="text-cyan-400 font-extrabold underline">น้อยไปหามาก</span>`;
+      } else {
+        elements.gameInstruction.innerHTML = `เรียงลำดับตัวเลขจาก <span class="text-purple-400 font-extrabold underline">มากไปหาน้อย</span>`;
+      }
+
+      elements.hudQuestionNum.innerText = `${state.currentQuestionNum}/${state.totalQuestions}`;
+    }
+
+    function checkAnswer() {
+      const sortedBlocks = [...state.numbers].sort((a, b) => a.x - b.x);
+      const userArray = sortedBlocks.map(b => b.val);
+      
+      const correctArray = [...userArray].sort((a, b) => {
+        return state.orderType === 'asc' ? a - b : b - a;
+      });
+
+      for (let i = 0; i < userArray.length; i++) {
+        if (userArray[i] !== correctArray[i]) return false;
+      }
+      return true;
+    }
+
+    function handleAnswerSubmission() {
+      const isCorrect = checkAnswer();
+      
+      if (isCorrect) {
+        state.score++;
+        elements.hudScore.innerText = state.score;
+        showFeedback(true);
+      } else {
+        showFeedback(false);
+      }
+
+      state.confirmTimerLeft = 0;
+      state.confirmTimerRight = 0;
+
+      setTimeout(() => {
+        if (state.currentQuestionNum < state.totalQuestions) {
+          state.currentQuestionNum++;
+          generateQuestion();
+        } else {
+          endGame();
+        }
+      }, 1800);
+    }
+
+    function showFeedback(isCorrect) {
+      elements.feedbackOverlay.classList.remove('hidden');
+      
+      if (isCorrect) {
+        elements.feedbackCard.className = "px-8 py-5 rounded-2xl text-white font-black text-2xl flex flex-col items-center gap-3 border-4 bg-slate-950/95 border-emerald-500 glow-green transition-all duration-300 transform scale-100 opacity-100 animate-pulse";
+        elements.feedbackIcon.className = "fa-solid fa-circle-check text-emerald-400 text-5xl";
+        elements.feedbackText.innerText = "เรียงลำดับถูกต้อง!";
+      } else {
+        elements.feedbackCard.className = "px-8 py-5 rounded-2xl text-white font-black text-2xl flex flex-col items-center gap-3 border-4 bg-slate-950/95 border-red-500 glow-red transition-all duration-300 transform scale-100 opacity-100";
+        elements.feedbackIcon.className = "fa-solid fa-circle-xmark text-red-400 text-5xl";
+        elements.feedbackText.innerText = "ลำดับยังไม่ถูกต้อง";
+      }
+
+      setTimeout(() => {
+        elements.feedbackCard.classList.add('opacity-0', 'scale-90');
+        setTimeout(() => {
+          elements.feedbackOverlay.classList.add('hidden');
+        }, 300);
+      }, 1500);
+    }
+
+    function startGame() {
+      state.score = 0;
+      state.currentQuestionNum = 1;
+      state.isGameStarted = true;
+      elements.startScreen.classList.add('hidden');
+      elements.summaryScreen.classList.add('hidden');
+      elements.hudScore.innerText = "0";
+      updateLayoutMetrics();
+      generateQuestion();
+    }
+
+    function endGame() {
+      state.isGameStarted = false;
+      elements.summaryScreen.classList.remove('hidden');
+      elements.finalScore.innerText = state.score;
+      
+      if (state.score === 10) {
+        elements.performanceFeedback.innerText = "ยอดเยี่ยมที่สุด! ความรู้เรื่องจำนวนของคุณสูงและแม่นยำมาก!";
+      } else if (state.score >= 7) {
+        elements.performanceFeedback.innerText = "เก่งมาก! จัดระเบียบตัวเลขและควบคุมพิกัดใน AR ได้อย่างลื่นไหล";
+      } else if (state.score >= 5) {
+        elements.performanceFeedback.innerText = "ผ่านการทดสอบ! ลองเล่นซ้ำและพัฒนาความคุ้นชินให้เร็วขึ้นนะ";
+      } else {
+        elements.performanceFeedback.innerText = "พยายามอีกครั้งนะ! ลองทบทวนการเรียนรู้เรื่องตัวเลขอีกรอบกันเลย";
+      }
+    }
+
+    function updateBlocksPosition() {
+      if (!state.isGameStarted) return;
+      state.numbers.forEach((block, index) => {
+        if (index !== state.heldBlockIndex) {
+          block.x += (block.targetX - block.x) * 0.25;
+          block.y += (blockY - block.y) * 0.25;
+        }
+      });
+    }
+
+    function processBlockDragging() {
+      if (state.heldBlockIndex === -1) return;
+
+      const heldBlock = state.numbers[state.heldBlockIndex];
+      heldBlock.x = state.cursorX - blockWidth / 2;
+      heldBlock.y = state.cursorY - blockHeight / 2;
+
+      heldBlock.y = Math.max(blockY - blockHeight, Math.min(blockY + blockHeight, heldBlock.y));
+
+      let sortedSlots = [...blocksX].map((x, idx) => ({ x, index: idx }));
+      let targetSlotIdx = 0;
+      let minDistance = Infinity;
+      
+      sortedSlots.forEach((slot) => {
+        let dist = Math.abs(state.cursorX - (slot.x + blockWidth/2));
+        if (dist < minDistance) {
+          minDistance = dist;
+          targetSlotIdx = slot.index;
+        }
+      });
+
+      const targetBlockInSlotIndex = state.numbers.findIndex(b => b.targetX === blocksX[targetSlotIdx]);
+
+      if (targetBlockInSlotIndex !== -1 && targetBlockInSlotIndex !== state.heldBlockIndex) {
+        const oldTargetXOfHeld = heldBlock.targetX;
+        heldBlock.targetX = blocksX[targetSlotIdx];
+        state.numbers[targetBlockInSlotIndex].targetX = oldTargetXOfHeld;
+      }
+    }
+
+
+    // --- พอร์ตการวาดภาพทั้งหมดลง Canvas ---
+    function drawGameUI() {
+      ctx.clearRect(0, 0, elements.canvas.width, elements.canvas.height);
+      
+      // ดึงวิดีโอกล้องมาแสดงผลเป็นภาพพื้นหลัง AR
+      if (state.controlMode === 'camera' && elements.webcam.readyState === elements.webcam.HAVE_ENOUGH_DATA) {
+        ctx.save();
+        // หากใช้กล้องหน้า (user) จะทำการสะท้อนภาพซ้ายขวาเพื่อให้ควบคุมได้เป็นธรรมชาติ
+        if (state.cameraFacingMode === 'user') {
+          ctx.scale(-1, 1);
+          ctx.drawImage(elements.webcam, -elements.canvas.width, 0, elements.canvas.width, elements.canvas.height);
+        } else {
+          // หากใช้กล้องหลัง ไม่จำเป็นต้องกลับภาพ
+          ctx.drawImage(elements.webcam, 0, 0, elements.canvas.width, elements.canvas.height);
+        }
+        ctx.restore();
+      } else {
+        // ฉากจำลองภาพเคลื่อนไหวทางอ้อมกรณีกล้องยังใช้งานไม่ได้
+        const bgGrad = ctx.createRadialGradient(elements.canvas.width/2, elements.canvas.height/2, 40, elements.canvas.width/2, elements.canvas.height/2, elements.canvas.width);
+        bgGrad.addColorStop(0, '#0c0c16');
+        bgGrad.addColorStop(1, '#040408');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, elements.canvas.width, elements.canvas.height);
+      }
+
+      if (!state.isGameStarted) return;
+
+      // 1. วาด Slot ไกด์ไลน์
+      blocksX.forEach((x) => {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        drawRoundRect(ctx, x, blockY, blockWidth, blockHeight, 10, false, true);
+        ctx.setLineDash([]);
+      });
+
+      // 2. วาดบล็อกตัวเลขเรียงกัน
+      state.numbers.forEach((block, index) => {
+        if (index !== state.heldBlockIndex) {
+          drawNumberBlock(block, false);
+        }
+      });
+      
+      if (state.heldBlockIndex !== -1) {
+        drawNumberBlock(state.numbers[state.heldBlockIndex], true);
+      }
+
+      // 3. วาดปุ่มซ้ายและขวา
+      drawConfirmButton(confirmBtnLeft, state.confirmTimerLeft, "ซ้าย (Left)");
+      drawConfirmButton(confirmBtnRight, state.confirmTimerRight, "ขวา (Right)");
+
+      // 4. วาดไอคอนระบุเคอร์เซอร์ข้อนิ้วมือ
+      if (state.handInView || state.controlMode === 'mouse') {
+        drawTargetCursor();
+      }
+    }
+
+    // ฟังก์ชันวาดบล็อกตัวเลข (แก้ไขปัญหาการแสดงผลกลับด้านแบบถาวร)
+    function drawNumberBlock(block, isHeld) {
+      ctx.save();
+      ctx.shadowColor = isHeld ? 'rgba(245, 158, 11, 0.8)' : 'rgba(15, 23, 42, 0.4)';
+      ctx.shadowBlur = isHeld ? 15 : 6;
+      
+      const gradient = ctx.createLinearGradient(block.x, block.y, block.x + blockWidth, block.y + blockHeight);
+      if (isHeld) {
+        gradient.addColorStop(0, '#f59e0b');
+        gradient.addColorStop(1, '#d97706');
+        ctx.strokeStyle = '#fef08a';
+      } else {
+        gradient.addColorStop(0, '#1e293b');
+        gradient.addColorStop(1, '#0f172a');
+        ctx.strokeStyle = '#3b82f6';
+      }
+      
+      ctx.fillStyle = gradient;
+      ctx.lineWidth = isHeld ? 3 : 1.5;
+      drawRoundRect(ctx, block.x, block.y, blockWidth, blockHeight, 12, true, true);
+      
+      // การแสดงผลข้อความตัวเลขไม่ให้สะท้อนซ้ายขวา
+      ctx.shadowBlur = 0;
+      ctx.font = 'bold 28px sans-serif';
+      ctx.fillStyle = isHeld ? '#ffffff' : '#38bdf8';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      
+      // [แก้ไขสำคัญ!] ฟังก์ชันแก้กระจกกลับซ้ายขวาสำหรับตัวเลข
+      ctx.save();
+      if (state.controlMode === 'camera' && state.cameraFacingMode === 'user') {
+        // ดึงแกน X ของตัวเลขให้สอดคล้องกับพิกัดติดกระจก
+        ctx.translate(block.x + blockWidth / 2, block.y + blockHeight / 2);
+        ctx.scale(-1, 1);
+        ctx.fillText(block.val, 0, 0);
+      } else {
+        // โหมดปกติ หรือ กล้องหลัง
+        ctx.translate(block.x + blockWidth / 2, block.y + blockHeight / 2);
+        ctx.fillText(block.val, 0, 0);
+      }
+      ctx.restore();
+      
+      ctx.restore();
+    }
+
+    // ฟังก์ชันวาดปุ่มยืนยัน (แก้ไขปัญหาไอคอนและตัวหนังสือกลับด้านแบบถาวร)
+    function drawConfirmButton(btn, timer, sideText) {
+      ctx.save();
+      const isCharging = timer > 0;
+      const progress = timer / state.confirmHoldFrames;
+      
+      ctx.shadowColor = isCharging ? 'rgba(16, 185, 129, 0.7)' : 'rgba(59, 130, 246, 0.25)';
+      ctx.shadowBlur = isCharging ? 20 : 8;
+      
+      const gradient = ctx.createLinearGradient(btn.x, btn.y, btn.x + btn.w, btn.y + btn.h);
+      if (isCharging) {
+        gradient.addColorStop(0, '#064e3b');
+        gradient.addColorStop(1, '#10b981');
+        ctx.strokeStyle = '#34d399';
+      } else {
+        gradient.addColorStop(0, '#111827');
+        gradient.addColorStop(1, '#1f2937');
+        ctx.strokeStyle = 'rgba(59, 130, 246, 0.35)';
+      }
+      
+      ctx.fillStyle = gradient;
+      ctx.lineWidth = 1.5;
+      drawRoundRect(ctx, btn.x, btn.y, btn.w, btn.h, 14, true, true);
+      
+      if (isCharging) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#34d399';
+        ctx.lineWidth = 3.5;
+        const radius = 16;
+        const cx = btn.x + btn.w / 2;
+        const cy = btn.y + btn.h / 2 - 8;
+        ctx.arc(cx, cy, radius, -Math.PI / 2, (-Math.PI / 2) + (Math.PI * 2 * progress));
+        ctx.stroke();
+      } else {
+        ctx.save();
+        ctx.translate(btn.x + btn.w / 2, btn.y + btn.h / 2 - 12);
+        
+        // [แก้ไขสำคัญ!] กันตัวสัญลักษณ์กลับด้าน
+        if (state.controlMode === 'camera' && state.cameraFacingMode === 'user') {
+          ctx.scale(-1, 1);
+        }
+        ctx.fillStyle = '#60a5fa';
+        ctx.font = '22px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(state.controlMode === 'camera' ? '✋' : '🖱️', 0, 0);
+        ctx.restore();
+      }
+
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = isCharging ? '#ffffff' : '#cbd5e1';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      
+      // วาดอักษรคำว่า "กางมือยืนยัน"
+      ctx.save();
+      ctx.translate(btn.x + btn.w / 2, btn.y + btn.h - 26);
+      if (state.controlMode === 'camera' && state.cameraFacingMode === 'user') {
+        ctx.scale(-1, 1);
+      }
+      if (state.controlMode === 'camera') {
+        ctx.fillText("กางมือยืนยัน", 0, 0);
+      } else {
+        ctx.fillText("สัมผัสค้างยืนยัน", 0, 0);
+      }
+      ctx.restore();
+
+      // วาดอักษรระบุประเภทมือ (ซ้าย / ขวา)
+      ctx.save();
+      ctx.translate(btn.x + btn.w / 2, btn.y + btn.h - 12);
+      if (state.controlMode === 'camera' && state.cameraFacingMode === 'user') {
+        ctx.scale(-1, 1);
+      }
+      ctx.font = '9px sans-serif';
+      ctx.fillStyle = isCharging ? '#a7f3d0' : '#94a3b8';
+      ctx.fillText(sideText, 0, 0);
+      ctx.restore();
+      
+      ctx.restore();
+    }
+
+    function drawTargetCursor() {
+      ctx.save();
+      const x = state.cursorX;
+      const y = state.cursorY;
+      const isPinch = state.pinchActive;
+      
+      ctx.strokeStyle = isPinch ? '#f59e0b' : '#10b981';
+      ctx.lineWidth = 2;
+      
+      ctx.beginPath();
+      ctx.arc(x, y, isPinch ? 14 : 20, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.fillStyle = isPinch ? '#f59e0b' : '#10b981';
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // สเกลเรดาร์ทหาร Sci-Fi
+      ctx.beginPath();
+      ctx.moveTo(x - 25, y); ctx.lineTo(x - 8, y);
+      ctx.moveTo(x + 8, y); ctx.lineTo(x + 25, y);
+      ctx.moveTo(x, y - 25); ctx.lineTo(x, y - 8);
+      ctx.moveTo(x, y + 8); ctx.lineTo(x, y + 25);
+      ctx.stroke();
+      
+      ctx.restore();
+    }
+
+    function drawRoundRect(ctx, x, y, width, height, radius, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+
+    // --- ฟังก์ชันการเปิดกล้องเว็บแคมสำหรับ Android ---
+    async function startAndroidCamera() {
+      if (state.activeStream) {
+        state.activeStream.getTracks().forEach(track => track.stop());
+      }
+
+      addLog(`กำลังร้องขอสิทธิ์กล้องในทิศทาง: ${state.cameraFacingMode}...`);
+      
+      const constraints = {
+        video: {
+          facingMode: state.cameraFacingMode,
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        },
+        audio: false
+      };
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        state.activeStream = stream;
+        elements.webcam.srcObject = stream;
+        addLog("เชื่อมต่อสัญญาณภาพสำเร็จ!");
+        
+        elements.webcam.onloadedmetadata = () => {
+          elements.webcam.play();
+          addLog("เปิดกล้องเรียบร้อย! ส่งประมวลผลต่อยัง AI...");
+          state.isAiReady = true;
+          
+          // เปลี่ยนหน้าเมื่อเรียบร้อย
+          setTimeout(() => {
+            elements.loadingScreen.classList.add('hidden');
+            elements.startScreen.classList.remove('hidden');
+          }, 800);
+        };
+      } catch (err) {
+        console.error("Android Camera Error: ", err);
+        addLog(`เกิดข้อผิดพลาดในการเปิดกล้อง (${err.name})`);
+        
+        let errMsg = "ไม่ได้รับสิทธิ์เปิดใช้กล้องถ่ายภาพ";
+        if (err.name === 'NotAllowedError') {
+          errMsg = "ระบบเบราว์เซอร์ถูกปฏิเสธเข้าใช้งานกล้อง โปรดแก้ไขสิทธิ์";
+        } else if (err.name === 'NotFoundError') {
+          errMsg = "ไม่พบตัวกล้องในระบบอุปกรณ์ชิ้นนี้";
+        }
+        
+        document.getElementById('camera-loading-text').innerText = `ปัญหากล้อง: ${errMsg}`;
+        document.getElementById('camera-loading-text').className = "text-xs text-red-400 font-bold";
+      }
+    }
+
+
+    // --- พอร์ตรับข้อมูลวิเคราะห์ MediaPipe ---
+    function onHandResults(results) {
+      if (state.controlMode !== 'camera') return;
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        state.handInView = true;
+        elements.noHandAlert.classList.add('hidden');
+        
+        const landmarks = results.multiHandLandmarks[0];
+        
+        const thumbTip = landmarks[4];
+        const indexTip = landmarks[8];
+        const w = elements.canvas.width;
+        const h = elements.canvas.height;
+
+        // คำนวณพิกัดบนหน้าจอของ Android
+        let thumbX, indexX;
+        if (state.cameraFacingMode === 'user') {
+          // กล้องหน้า: สลับภาพซ้ายขวาเพื่อเอื้อในการคุม
+          thumbX = (1 - thumbTip.x) * w;
+          indexX = (1 - indexTip.x) * w;
+        } else {
+          // กล้องหลัง: ดึงสเกลตามสากลจริง
+          thumbX = thumbTip.x * w;
+          indexX = indexTip.x * w;
+        }
+        
+        const thumbY = thumbTip.y * h;
+        const indexY = indexTip.y * h;
+
+        state.cursorX = (thumbX + indexX) / 2;
+        state.cursorY = (thumbY + indexY) / 2;
+
+        const dx = thumbX - indexX;
+        const dy = thumbY - indexY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        const maxExpectedDist = 200;
+        const percentDist = Math.max(0, Math.min(100, Math.round((distance / maxExpectedDist) * 100)));
+        elements.hudPinchDist.innerText = `${percentDist}%`;
+
+        // ลอจิกควบคุมการ Pinch คีบบล็อก
+        if (distance < state.pinchThreshold) {
+          if (!state.pinchActive) {
+            state.pinchActive = true;
+            
+            if (state.isGameStarted && state.heldBlockIndex === -1) {
+              const cx = state.cursorX;
+              const cy = state.cursorY;
+              
+              for (let i = 0; i < state.numbers.length; i++) {
+                const b = state.numbers[i];
+                if (cx >= b.x && cx <= b.x + blockWidth &&
+                    cy >= b.y && cy <= b.y + blockHeight) {
+                  state.heldBlockIndex = i;
+                  break;
+                }
+              }
+            }
+          }
+        } else if (distance > state.unpinchThreshold) {
+          if (state.pinchActive) {
+            state.pinchActive = false;
+            
+            if (state.heldBlockIndex !== -1) {
+              const block = state.numbers[state.heldBlockIndex];
+              block.x = block.targetX;
+              block.y = blockY;
+              state.heldBlockIndex = -1;
+            }
+          }
+        }
+
+        // ประเมินการกางฝ่ามือตอบคำถาม
+        const isHandOpen = checkOpenPalm(landmarks);
+        if (state.isGameStarted) {
+          const cx = state.cursorX;
+          const cy = state.cursorY;
+
+          if (isHandOpen && 
+              cx >= confirmBtnLeft.x && cx <= confirmBtnLeft.x + confirmBtnLeft.w &&
+              cy >= confirmBtnLeft.y && cy <= confirmBtnLeft.y + confirmBtnLeft.h) {
+            state.confirmTimerLeft++;
+            state.confirmTimerRight = 0;
+            if (state.confirmTimerLeft >= state.confirmHoldFrames) {
+              handleAnswerSubmission();
+            }
+          } 
+          else if (isHandOpen && 
+                   cx >= confirmBtnRight.x && cx <= confirmBtnRight.x + confirmBtnRight.w &&
+                   cy >= confirmBtnRight.y && cy <= confirmBtnRight.y + confirmBtnRight.h) {
+            state.confirmTimerRight++;
+            state.confirmTimerLeft = 0;
+            if (state.confirmTimerRight >= state.confirmHoldFrames) {
+              handleAnswerSubmission();
+            }
+          } else {
+            state.confirmTimerLeft = Math.max(0, state.confirmTimerLeft - 2);
+            state.confirmTimerRight = Math.max(0, state.confirmTimerRight - 2);
+          }
+        }
+
+      } else {
+        state.handInView = false;
+        elements.noHandAlert.classList.remove('hidden');
+        
+        if (state.heldBlockIndex !== -1) {
+          const block = state.numbers[state.heldBlockIndex];
+          block.x = block.targetX;
+          block.y = blockY;
+          state.heldBlockIndex = -1;
+        }
+        
+        state.confirmTimerLeft = Math.max(0, state.confirmTimerLeft - 2);
+        state.confirmTimerRight = Math.max(0, state.confirmTimerRight - 2);
+      }
+    }
+
+    function checkOpenPalm(landmarks) {
+      const indexOpen = landmarks[8].y < landmarks[6].y;
+      const middleOpen = landmarks[12].y < landmarks[10].y;
+      const ringOpen = landmarks[16].y < landmarks[14].y;
+      const pinkyOpen = landmarks[20].y < landmarks[18].y;
+      const thumbOpen = Math.abs(landmarks[4].x - landmarks[2].x) > 0.08;
+
+      const openCount = [indexOpen, middleOpen, ringOpen, pinkyOpen, thumbOpen].filter(Boolean).length;
+      return openCount >= 4;
+    }
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.70, 
+      minTrackingConfidence: 0.70
+    });
+
+    hands.onResults(onHandResults);
+
+
+    // --- แอนิเมชันลูปประมวลผลหลัก ---
+    async function processVideoFrame() {
+      if (state.controlMode === 'camera' && elements.webcam.readyState === elements.webcam.HAVE_ENOUGH_DATA) {
+        try {
+          await hands.send({ image: elements.webcam });
+        } catch (e) {
+          console.error("Hand processing error: ", e);
+        }
+      }
+      
+      processBlockDragging();
+      updateBlocksPosition();
+      drawGameUI();
+
+      requestAnimationFrame(processVideoFrame);
+    }
+
+
+    // --- ตัวกระตุ้นสวิตช์กล้องสำหรับมือถือ (กล้องหน้า/กล้องหลัง) ---
+    function switchCamera() {
+      state.cameraFacingMode = (state.cameraFacingMode === 'user') ? 'environment' : 'user';
+      addLog(`สลับกล้องไปใช้: ${state.cameraFacingMode}`);
+      startAndroidCamera();
+    }
+
+
+    // --- พอร์ตควบคุมโหมดสัมผัสสำรอง (Touch Mode Fallback) ---
+    function activateFallbackMode() {
+      state.controlMode = 'mouse';
+      addLog("เปิดใช้งานโหมดสัมผัส/เมาส์สลักบล็อกตัวเลข");
+      
+      elements.modeBadge.innerHTML = `<i class="fa-solid fa-hand-pointer"></i> โหมดสำรอง: สัมผัส / เมาส์`;
+      elements.modeBadge.className = "inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 mb-4";
+      
+      elements.guideSteps.innerHTML = `
+        <li>ใช้ <strong class="text-amber-400">ลากนิ้วสัมผัสหน้าจอ</strong> บนบล็อกตัวเลขเพื่อสลับสล็อตได้โดยตรง</li>
+        <li>สลับเรียงเลขเรียงสล็อต <span class="text-cyan-400 font-bold">น้อยไปมาก หรือ มากไปน้อย</span></li>
+        <li>จัดเรียงเสร็จแล้วให้ <strong class="text-emerald-400">จิ้มนิ้วค้างไว้</strong> บนปุ่ม <strong class="text-emerald-400">"ยืนยันคำตอบ"</strong> ด้านข้างเพื่อชาร์จหลอดส่งคำตอบ</li>
+      `;
+
+      elements.hudModeDisplay.innerText = "สัมผัสจอภาพ";
+      elements.pinchDebugInfo.classList.add('hidden');
+      elements.submitGuideline.innerHTML = "สัมผัสค้างบนปุ่ม <span class='text-emerald-400 font-bold'>ยืนยัน</span> ค้างเพื่อส่งคำตอบ";
+      elements.noHandAlert.classList.add('hidden');
+
+      elements.loadingScreen.classList.add('hidden');
+      elements.startScreen.classList.remove('hidden');
+    }
+
+    function getTouchPos(canvas, evt) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: evt.clientX - rect.left,
+        y: evt.clientY - rect.top
+      };
+    }
+
+    function handleTouchDown(x, y) {
+      if (!state.isGameStarted || state.controlMode !== 'mouse') return;
+      
+      state.cursorX = x;
+      state.cursorY = y;
+      state.mouseIsDown = true;
+      state.pinchActive = true;
+
+      // สุ่มตรวจจับบล็อกตัวเลข
+      for (let i = 0; i < state.numbers.length; i++) {
+        const b = state.numbers[i];
+        if (x >= b.x && x <= b.x + blockWidth &&
+            y >= b.y && y <= b.y + blockHeight) {
+          state.heldBlockIndex = i;
+          break;
+        }
+      }
+    }
+
+    function handleTouchMove(x, y) {
+      if (!state.isGameStarted || state.controlMode !== 'mouse') return;
+      state.cursorX = x;
+      state.cursorY = y;
+    }
+
+    function handleTouchUp() {
+      if (state.controlMode !== 'mouse') return;
+      state.mouseIsDown = false;
+      state.pinchActive = false;
+      
+      if (state.heldBlockIndex !== -1) {
+        const block = state.numbers[state.heldBlockIndex];
+        block.x = block.targetX;
+        block.y = blockY;
+        state.heldBlockIndex = -1;
+      }
+      
+      state.confirmTimerLeft = 0;
+      state.confirmTimerRight = 0;
+    }
+
+    // ทัชสกรีนสำหรับ Android
+    elements.canvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length > 0) {
+        const rect = elements.canvas.getBoundingClientRect();
+        const x = e.touches[0].clientX - rect.left;
+        const y = e.touches[0].clientY - rect.top;
+        handleTouchDown(x, y);
+      }
+    });
+
+    elements.canvas.addEventListener('touchmove', (e) => {
+      if (e.touches.length > 0) {
+        const rect = elements.canvas.getBoundingClientRect();
+        const x = e.touches[0].clientX - rect.left;
+        const y = e.touches[0].clientY - rect.top;
+        handleTouchMove(x, y);
+      }
+    });
+
+    window.addEventListener('touchend', handleTouchUp);
+
+    // รองรับเมาส์กรณีรันพรีวิวบนเครื่องเดสก์ท็อป
+    elements.canvas.addEventListener('mousedown', (e) => {
+      const pos = getTouchPos(elements.canvas, e);
+      handleTouchDown(pos.x, pos.y);
+    });
+
+    elements.canvas.addEventListener('mousemove', (e) => {
+      const pos = getTouchPos(elements.canvas, e);
+      handleMouseMove(pos.x, pos.y);
+    });
+
+    window.addEventListener('mouseup', handleTouchUp);
+
+    // ประมวลความหนืดในการกดปุ่มของโหมดสัมผัส
+    setInterval(() => {
+      if (state.controlMode !== 'mouse' || !state.isGameStarted || !state.mouseIsDown) return;
+      
+      const cx = state.cursorX;
+      const cy = state.cursorY;
+
+      if (cx >= confirmBtnLeft.x && cx <= confirmBtnLeft.x + confirmBtnLeft.w &&
+          cy >= confirmBtnLeft.y && cy <= confirmBtnLeft.y + confirmBtnLeft.h) {
+        state.confirmTimerLeft++;
+        state.confirmTimerRight = 0;
+        if (state.confirmTimerLeft >= state.confirmHoldFrames) {
+          handleAnswerSubmission();
+        }
+      }
+      else if (cx >= confirmBtnRight.x && cx <= confirmBtnRight.x + confirmBtnRight.w &&
+               cy >= confirmBtnRight.y && cy <= confirmBtnRight.y + confirmBtnRight.h) {
+        state.confirmTimerRight++;
+        state.confirmTimerLeft = 0;
+        if (state.confirmTimerRight >= state.confirmHoldFrames) {
+          handleAnswerSubmission();
+        }
+      } else {
+        state.confirmTimerLeft = Math.max(0, state.confirmTimerLeft - 2);
+        state.confirmTimerRight = Math.max(0, state.confirmTimerRight - 2);
+      }
+    }, 40);
+
+
+    // --- จุดสตาร์ทของโปรแกรมแอปพลิเคชัน ---
+    window.onload = () => {
+      resizeCanvas();
+      checkInAppBrowser();
+      
+      // เริ่มแอนิเมชันลูปการวาดกราฟิก
+      processVideoFrame();
+
+      // สตาร์ทกล้องหลักสำหรับ Android
+      startAndroidCamera();
+    };
+
+    // เชื่อมปุ่มสวิตช์สัญญากล้องและเมนูต่าง ๆ
+    elements.btnSwitchCamera.addEventListener('click', switchCamera);
+    elements.btnFallbackMode.addEventListener('click', activateFallbackMode);
+    elements.btnStart.addEventListener('click', startGame);
+    elements.btnRestart.addEventListener('click', startGame);
+  </script>
+</body>
+</html>
